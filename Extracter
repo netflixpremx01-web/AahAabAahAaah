@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+# Zip extract karke seedha GitHub par repo bana deta hai. Bas chalao.
+import getpass, json, os, shutil, subprocess, sys, urllib.request, urllib.error, zipfile
+from pathlib import Path
+
+run = lambda *a, **k: subprocess.run(a, cwd=k.get("cwd"), capture_output=True, text=True, check=k.get("check", True))
+
+zip_path = next((p for p in Path(".").glob("*.zip") if "ton" in p.name.lower()), None) or next(Path(".").glob("*.zip"), None)
+if not zip_path:
+    sys.exit("Isi folder me zip rakho (ton-terminal-flat.zip)")
+folder = Path("ton-terminal")
+
+# 1. extract (+ unwrap agar andar ek hi folder ho)
+folder.mkdir(exist_ok=True)
+with zipfile.ZipFile(zip_path) as z:
+    z.extractall(folder)
+items = list(folder.iterdir())
+if len(items) == 1 and items[0].is_dir() and not (items[0] / "main.py").exists():
+    tmp = folder.parent / "tmp_unwrap"
+    shutil.move(str(items[0]), str(tmp))
+    for i in tmp.iterdir():
+        shutil.move(str(i), str(folder / i.name))
+    shutil.rmtree(tmp)
+print("extracted ->", folder)
+
+# 2. git
+run("git", "init", cwd=folder)
+if not run("git", "config", "user.name", cwd=folder, check=False).stdout.strip():
+    run("git", "config", "user.name", "TON Terminal Dev", cwd=folder)
+    run("git", "config", "user.email", "dev@local", cwd=folder)
+run("git", "add", ".", cwd=folder)
+run("git", "commit", "-m", "TON NFT Trading Terminal", cwd=folder)
+run("git", "branch", "-M", "main", cwd=folder)
+
+# 3. GitHub
+user = os.environ.get("GITHUB_USER") or input("GitHub username: ").strip()
+token = os.environ.get("GITHUB_TOKEN") or getpass.getpass("GitHub token (repo scope): ").strip()
+repo = os.environ.get("GITHUB_REPO") or input("Repo name [ton-terminal]: ").strip() or "ton-terminal"
+
+def api(path, method="GET", body=None):
+    req = urllib.request.Request("https://api.github.com" + path,
+        data=json.dumps(body).encode() if body else None, method=method,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                 "Content-Type": "application/json", "User-Agent": "zip-to-github"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode() or "{}")
+
+status, info = api("/user")
+if status != 200:
+    sys.exit(f"Token galat/expired ({status}): {info.get('message')}")
+
+status, info = api(f"/repos/{user}/{repo}")
+if status != 200:
+    status, info = api("/user/repos", "POST", {"name": repo, "private": False, "auto_init": False})
+    if status not in (200, 201):
+        sys.exit(f"Repo nahi bana ({status}): {info.get('message')}")
+print("repo ready:", f"github.com/{user}/{repo}")
+
+# 4. push
+remote = f"https://{user}:{token}@github.com/{user}/{repo}.git"
+if "origin" in run("git", "remote", cwd=folder, check=False).stdout.split():
+    run("git", "remote", "set-url", "origin", remote, cwd=folder)
+else:
+    run("git", "remote", "add", "origin", remote, cwd=folder)
+run("git", "push", "-u", "origin", "main", cwd=folder)
+
+print("\nHO GAYA ->", f"https://github.com/{user}/{repo}")
+print("Ab Railway: New Project -> Deploy from GitHub repo ->", repo)
+print("Start Command: sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --app-dir /app\"")
